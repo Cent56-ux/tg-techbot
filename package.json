@@ -1,0 +1,46 @@
+{
+  "name": "tg-techbot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Telegram group bot with Supabase, Zoom and OpenAI (MCP-ready)",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "supabase",
+    "zoom",
+    "openai",
+    "mcp"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.4",
+    "axios": "^1.11.0",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "dotenv": "^16.4.5",
+    "node-cron": "^4.2.1",
+    "openai": "^5.20.0",
+    "pino": "^9.9.5",
+    "telegraf": "^4.16.3",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "@types/node-cron": "^3.0.11",
+    "@types/pino": "^7.0.5",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.2"
+  }
+}
