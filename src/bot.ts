@@ -1,56 +1,69 @@
 import { Telegraf } from 'telegraf';
 import { CFG } from './config';
 import { converse } from './llm';
-import { eventCard, rsvpKeyboard, eventsList } from './ui/messages';
-import { statusFor } from './tools/events';
+import { eventCard, eventsList, actionKeyboard, editMenuKeyboard } from './ui/messages';
+import { statusFor, updateEvent } from './tools/events';
 import { setParticipant } from './tools/participants';
 
 export const bot = new Telegraf(CFG.botToken);
 
-bot.command('id', async (ctx) => { try { await ctx.reply(`chat id: ${ctx.chat?.id}`); } catch (e) { console.error('/id error', e); } });
+// /id for diagnostics
+bot.command('id', async (ctx) => {
+  try { await ctx.reply(`chat id: ${ctx.chat?.id}`); } catch (e) { console.error('/id error', e); }
+});
 
+// List upcoming
 bot.command('events', async (ctx) => {
   try {
     const res = await converse('Liste die kommenden Events (max 5)', { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
-    if ((res as any).type === 'events_list') await ctx.reply(eventsList((res as any).events || []));
-    else if ((res as any).text) await ctx.reply((res as any).text as string);
-  } catch (e) { console.error('/events error', e); await ctx.reply('⚠️ Da ist etwas schiefgelaufen.'); }
+    if ((res as any).type === 'events_list') {
+      await ctx.reply(eventsList((res as any).events || []));
+    } else if ((res as any).text) {
+      await ctx.reply((res as any).text as string);
+    }
+  } catch (e) {
+    console.error('/events error', e);
+    await ctx.reply('⚠️ Da ist etwas schiefgelaufen.');
+  }
 });
 
+// Next / Status
 bot.command('next', async (ctx) => {
   try {
     const res = await converse('Zeige Status des nächsten Events', { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
     if ((res as any).type === 'status') {
       const { event, counts } = (res as any).payload;
-      await ctx.reply(eventCard(event, counts), { reply_markup: rsvpKeyboard(event.id) });
-    } else if ((res as any).text) await ctx.reply((res as any).text as string);
-  } catch (e) { console.error('/next error', e); await ctx.reply('⚠️ Da ist etwas schiefgelaufen.'); }
+      await ctx.reply(eventCard(event, counts), { reply_markup: actionKeyboard(event.id) });
+    } else if ((res as any).text) {
+      await ctx.reply((res as any).text as string);
+    }
+  } catch (e) {
+    console.error('/next error', e);
+    await ctx.reply('⚠️ Da ist etwas schiefgelaufen.');
+  }
 });
 
-bot.command('status', async (ctx) => ctx.scene?.enter ? null : (bot as any)); // no-op alias safeguard
-
-// NEW: /edit parser (very simple key=value pairs)
+// Simple edit command (still supported)
 bot.command('edit', async (ctx) => {
   try {
     const text = (ctx.message as any)?.text || '';
-    const parts = text.split(/\s+/).slice(1); // after /edit
+    const parts = text.split(/\s+/).slice(1);
     const patch: any = {};
     for (const p of parts) {
       const [k, ...rest] = p.split('=');
       const v = rest.join('=');
       if (!k || !v) continue;
-      if (/^title$/i.test(k)) patch.title = v;
-      else if (/^presenter$/i.test(k)) patch.presenter = v;
-      else if (/^description$/i.test(k)) patch.description = v;
+      if (/^title$/i.test(k)) patch.title = v.replace(/_/g, ' ');
+      else if (/^presenter$/i.test(k)) patch.presenter = v.replace(/_/g, ' ');
+      else if (/^description$/i.test(k)) patch.description = v.replace(/_/g, ' ');
       else if (/^duration|duration_minutes$/i.test(k)) patch.duration_minutes = Number(v);
       else if (/^start|start_at$/i.test(k)) patch.start_at = v;
       else if (/^recreate_zoom$/i.test(k)) patch.recreate_zoom = /^(1|true|yes|ja)$/i.test(v);
     }
-
     const res = await converse(JSON.stringify({ intent: 'events_update', patch }), { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
     if ((res as any).type === 'event_updated') {
       const ev = (res as any).event;
-      await ctx.reply('Aktualisiert ✅\n' + eventCard(ev));
+      await ctx.reply('Aktualisiert ✅\n' + eventCard(ev), { reply_markup: actionKeyboard(ev.id) });
     } else if ((res as any).text) {
       await ctx.reply((res as any).text as string);
     } else {
@@ -62,6 +75,7 @@ bot.command('edit', async (ctx) => {
   }
 });
 
+// Group messages
 bot.on('message', async (ctx) => {
   try {
     const text = (ctx.message as any)?.text || '';
@@ -76,13 +90,13 @@ bot.on('message', async (ctx) => {
     if ((res as any).type === 'event_created') {
       const ev = (res as any).event;
       const st = await statusFor(ev.id);
-      await ctx.reply(eventCard(ev, st.counts), { reply_markup: rsvpKeyboard(ev.id) });
+      await ctx.reply(eventCard(ev, st.counts), { reply_markup: actionKeyboard(ev.id) });
     } else if ((res as any).type === 'event_updated') {
       const ev = (res as any).event;
-      await ctx.reply('Aktualisiert ✅\n' + eventCard(ev));
+      await ctx.reply('Aktualisiert ✅\n' + eventCard(ev), { reply_markup: actionKeyboard(ev.id) });
     } else if ((res as any).type === 'status') {
       const { event, counts } = (res as any).payload;
-      await ctx.reply(eventCard(event, counts), { reply_markup: rsvpKeyboard(event.id) });
+      await ctx.reply(eventCard(event, counts), { reply_markup: actionKeyboard(event.id) });
     } else if ((res as any).type === 'events_list') {
       await ctx.reply(eventsList((res as any).events || []));
     } else if ((res as any).type === 'announce') {
@@ -96,17 +110,112 @@ bot.on('message', async (ctx) => {
   }
 });
 
-// RSVP-Buttons
+// Callback queries (RSVP + Edit)
 bot.on('callback_query', async (ctx: any) => {
   try {
     const data = String(ctx.callbackQuery.data || '');
-    const m = data.match(/^rsvp:(.+):(going|maybe|declined)$/);
-    if (!m) return ctx.answerCbQuery();
-    const [_, evId, status] = m;
-    await setParticipant({
-      event_id: evId, tg_user_id: ctx.from.id, display_name: ctx.from.first_name,
-      status: status as 'going' | 'maybe' | 'declined'
-    });
-    await ctx.answerCbQuery('Gespeichert ✅');
-  } catch (e) { console.error('callback error', e); try { await ctx.answerCbQuery('Fehler'); } catch {} }
+
+    // RSVP
+    let m = data.match(/^rsvp:(.+):(going|maybe|declined)$/);
+    if (m) {
+      const [_, evId, status] = m;
+      await setParticipant({
+        event_id: evId,
+        tg_user_id: ctx.from.id,
+        display_name: ctx.from.first_name,
+        status: status as 'going' | 'maybe' | 'declined'
+      });
+      await ctx.answerCbQuery('Gespeichert ✅');
+      return;
+    }
+
+    // EDIT — admin gate
+    m = data.match(/^edit:([a-z0-9-]+)(?::(.+))?$/i);
+    if (m) {
+      const evId = m[1];
+      const rest = m[2] || '';
+
+      // Only admins/owner may edit
+      const chatId = ctx.chat?.id ?? CFG.groupId;
+      try {
+        const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
+        const isAdmin = ['creator', 'administrator'].includes((member as any).status);
+        if (!isAdmin) {
+          await ctx.answerCbQuery('Nur Admins dürfen bearbeiten.', { show_alert: true });
+          return;
+        }
+      } catch (_) {
+        // if we cannot verify, be conservative
+        await ctx.answerCbQuery('Bearbeitung nicht erlaubt.', { show_alert: true });
+        return;
+      }
+
+      if (!rest) {
+        // open menu
+        await ctx.answerCbQuery();
+        // swap markup on same message if possible
+        try {
+          await ctx.editMessageReplyMarkup(editMenuKeyboard(evId));
+        } catch {
+          await ctx.reply('Was möchtest du ändern?', { reply_markup: editMenuKeyboard(evId) });
+        }
+        return;
+      }
+
+      // Actions
+      if (rest.startsWith('shift:')) {
+        const minutes = parseInt(rest.split(':')[1], 10);
+        const st = await statusFor(evId);
+        const oldStart = new Date(st.event.start_at);
+        const newStart = new Date(oldStart.getTime() + minutes * 60_000).toISOString();
+        const ev = await updateEvent({ id: evId, patch: { start_at: newStart } });
+        await ctx.answerCbQuery('Zeit aktualisiert ✅');
+        try {
+          await ctx.editMessageText(eventCard(ev, st.counts), { reply_markup: actionKeyboard(ev.id) });
+        } catch {
+          await ctx.reply('Aktualisiert ✅\n' + eventCard(ev), { reply_markup: actionKeyboard(ev.id) });
+        }
+        return;
+      }
+
+      if (rest.startsWith('tomorrow:')) {
+        // tomorrow HH:MM (Europe/Berlin)
+        const hhmm = rest.split(':').slice(1).join(':'); // "19:00"
+        const d = new Date();
+        d.setDate(d.getDate() + 1);
+        const [hh, mm] = hhmm.split(':').map(Number);
+        d.setHours(hh, mm, 0, 0);
+        const ev = await updateEvent({ id: evId, patch: { start_at: d.toISOString() } });
+        await ctx.answerCbQuery('Auf morgen gesetzt ✅');
+        await ctx.reply('Aktualisiert ✅\n' + eventCard(ev), { reply_markup: actionKeyboard(ev.id) });
+        return;
+      }
+
+      if (rest === 'zoom') {
+        const ev = await updateEvent({ id: evId, patch: { recreate_zoom: true } });
+        await ctx.answerCbQuery('Zoom neu erstellt ✅');
+        await ctx.reply('Aktualisiert ✅\n' + eventCard(ev), { reply_markup: actionKeyboard(ev.id) });
+        return;
+      }
+
+      if (rest === 'help') {
+        await ctx.answerCbQuery();
+        await ctx.reply([
+          'Bearbeiten-Hilfe:',
+          '• /edit start=2025-10-01T19:00',
+          '• /edit title=Neuer_Titel',
+          '• /edit presenter=Alex',
+          '• /edit duration=45',
+          '• /edit recreate_zoom=true'
+        ].join('\n'));
+        return;
+      }
+    }
+
+    // default
+    await ctx.answerCbQuery();
+  } catch (e) {
+    console.error('callback error', e);
+    try { await ctx.answerCbQuery('Fehler'); } catch {}
+  }
 });
