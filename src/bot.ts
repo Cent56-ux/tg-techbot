@@ -27,7 +27,7 @@ bot.command('events', async (ctx) => {
   }
 });
 
-// Next / Status
+// Next / Status (alias)
 bot.command('next', async (ctx) => {
   try {
     const res = await converse('Zeige Status des nächsten Events', { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
@@ -43,7 +43,22 @@ bot.command('next', async (ctx) => {
   }
 });
 
-// Simple edit command (still supported)
+bot.command('status', async (ctx) => {
+  try {
+    const res = await converse('Zeige Status des nächsten Events', { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
+    if ((res as any).type === 'status') {
+      const { event, counts } = (res as any).payload;
+      await ctx.reply(eventCard(event, counts), { reply_markup: actionKeyboard(event.id) });
+    } else if ((res as any).text) {
+      await ctx.reply((res as any).text as string);
+    }
+  } catch (e) {
+    console.error('/status error', e);
+    await ctx.reply('⚠️ Da ist etwas schiefgelaufen.');
+  }
+});
+
+// Simple /edit parser (optional manual edit)
 bot.command('edit', async (ctx) => {
   try {
     const text = (ctx.message as any)?.text || '';
@@ -144,16 +159,13 @@ bot.on('callback_query', async (ctx: any) => {
           await ctx.answerCbQuery('Nur Admins dürfen bearbeiten.', { show_alert: true });
           return;
         }
-      } catch (_) {
-        // if we cannot verify, be conservative
+      } catch {
         await ctx.answerCbQuery('Bearbeitung nicht erlaubt.', { show_alert: true });
         return;
       }
 
       if (!rest) {
-        // open menu
         await ctx.answerCbQuery();
-        // swap markup on same message if possible
         try {
           await ctx.editMessageReplyMarkup(editMenuKeyboard(evId));
         } catch {
@@ -162,7 +174,6 @@ bot.on('callback_query', async (ctx: any) => {
         return;
       }
 
-      // Actions
       if (rest.startsWith('shift:')) {
         const minutes = parseInt(rest.split(':')[1], 10);
         const st = await statusFor(evId);
@@ -179,8 +190,7 @@ bot.on('callback_query', async (ctx: any) => {
       }
 
       if (rest.startsWith('tomorrow:')) {
-        // tomorrow HH:MM (Europe/Berlin)
-        const hhmm = rest.split(':').slice(1).join(':'); // "19:00"
+        const hhmm = rest.split(':').slice(1).join(':');
         const d = new Date();
         d.setDate(d.getDate() + 1);
         const [hh, mm] = hhmm.split(':').map(Number);
@@ -212,7 +222,6 @@ bot.on('callback_query', async (ctx: any) => {
       }
     }
 
-    // default
     await ctx.answerCbQuery();
   } catch (e) {
     console.error('callback error', e);
