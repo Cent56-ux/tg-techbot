@@ -6,7 +6,7 @@ WORKDIR /app
 
 # Install deps first (better layer caching)
 COPY package*.json ./
-RUN npm ci --omit=dev=false
+RUN npm ci
 
 # Copy source
 COPY tsconfig.json ./
