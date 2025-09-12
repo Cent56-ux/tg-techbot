@@ -118,3 +118,21 @@ export async function deleteEvent(evId: string) {
   if (eDel.error) throw eDel.error;
   return eDel.data;
 }
+
+// --- Delete an event (and its participants) ---
+import { sb } from '../db/supabase';
+
+/**
+ * Löscht ein Event inkl. aller Teilnehmer-Einträge.
+ * Gibt das gelöschte Event zurück (oder wirft bei Fehlern).
+ */
+export async function deleteEvent(evId: string) {
+  // Teilnehmer (FK) zuerst entfernen
+  const pDel = await sb.from('participants').delete().eq('event_id', evId);
+  if (pDel.error) throw pDel.error;
+
+  // Event löschen und zurückgeben
+  const eDel = await sb.from('events').delete().eq('id', evId).select().single();
+  if (eDel.error) throw eDel.error;
+  return eDel.data;
+}
