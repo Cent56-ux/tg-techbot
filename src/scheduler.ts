@@ -18,13 +18,15 @@ export async function tick() {
       .eq('reminder_48h_posted', false)
       .gt('start_at', win48Start.toISOString())
       .lt('start_at', win48End.toISOString());
-    if (error) { console.error(error); } else {
+    if (!error) {
       for (const ev of data || []) {
         const st = await statusFor(ev.id);
         const text = `⏰ In 48h: ${ev.title}\n👥 Zusagen: ${st.counts.going} · Maybe: ${st.counts.maybe}\n🔗 ${ev.zoom_join_url || ''}`.trim();
         await bot.telegram.sendMessage(CFG.groupId, text);
         await markReminder(ev.id, '48h');
       }
+    } else {
+      console.error(error);
     }
   }
 
@@ -34,12 +36,14 @@ export async function tick() {
       .eq('reminder_15m_posted', false)
       .gt('start_at', win15Start.toISOString())
       .lt('start_at', win15End.toISOString());
-    if (error) { console.error(error); } else {
+    if (!error) {
       for (const ev of data || []) {
         const text = `🔔 In 15 Minuten: ${ev.title}\n${ev.zoom_join_url || ''}`.trim();
-        await bot.telegram.sendMessage(CFG.groupId, text, { disable_web_page_preview: true });
+        await bot.telegram.sendMessage(CFG.groupId, text);
         await markReminder(ev.id, '15m');
       }
+    } else {
+      console.error(error);
     }
   }
 }
