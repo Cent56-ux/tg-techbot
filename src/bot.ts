@@ -7,12 +7,63 @@ import { setParticipant } from './tools/participants';
 
 export const bot = new Telegraf(CFG.botToken);
 
-// /id for diagnostics
+/** ===== Zugriffsschutz: nur Mitglieder der konfigurierten Gruppe ===== */
+type MemberCacheEntry = { ok: boolean; ts: number };
+const memberCache = new Map<number, MemberCacheEntry>();
+const TTL_MS = 5 * 60 * 1000;
+
+async function isGroupMember(userId: number): Promise<boolean> {
+  const now = Date.now();
+  const hit = memberCache.get(userId);
+  if (hit && now - hit.ts < TTL_MS) return hit.ok;
+
+  try {
+    // Prüfe Mitgliedschaft in der EINEN erlaubten Gruppe
+    const m = await bot.telegram.getChatMember(CFG.groupId, userId);
+    const ok = ['creator', 'administrator', 'member'].includes((m as any).status);
+    memberCache.set(userId, { ok, ts: now });
+    return ok;
+  } catch {
+    memberCache.set(userId, { ok: false, ts: now });
+    return false;
+  }
+}
+
+// Middleware: nur Gruppenmitglieder dürfen den Bot nutzen
+bot.use(async (ctx, next) => {
+  const uid = ctx.from?.id;
+  if (!uid) return;
+
+  const chatId = ctx.chat?.id;
+  const isPrivate = ctx.chat?.type === 'private';
+
+  // 1) Der Bot soll nur in der konfigurierten Gruppe reagieren
+  if (chatId && chatId < 0 && chatId !== CFG.groupId) {
+    // fremde Gruppen ignorieren
+    return;
+  }
+
+  // 2) In DMs nur antworten, wenn der User Mitglied unserer Gruppe ist
+  if (isPrivate) {
+    const ok = await isGroupMember(uid);
+    if (!ok) {
+      try {
+        await ctx.reply('Nur Mitglieder der Promptimals-Gruppe dürfen mir schreiben. 👋\nFüge mich zur Gruppe hinzu oder tritt der Gruppe bei.');
+      } catch {}
+      return;
+    }
+  }
+
+  // 3) In der eigenen Gruppe: Standardfall → weiter
+  return next();
+});
+
+// ====== Commands ======
+
 bot.command('id', async (ctx) => {
   try { await ctx.reply(`chat id: ${ctx.chat?.id}`); } catch (e) { console.error('/id error', e); }
 });
 
-// List upcoming
 bot.command('events', async (ctx) => {
   try {
     const res = await converse('Liste die kommenden Events (max 5)', { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
@@ -27,7 +78,6 @@ bot.command('events', async (ctx) => {
   }
 });
 
-// Next / Status (alias)
 bot.command('next', async (ctx) => {
   try {
     const res = await converse('Zeige Status des nächsten Events', { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
@@ -58,9 +108,25 @@ bot.command('status', async (ctx) => {
   }
 });
 
-// Simple /edit parser (optional manual edit)
+// Manuelles /edit (optional)
 bot.command('edit', async (ctx) => {
   try {
+    // Sicherheitscheck für DMs ist schon in der Middleware.
+    // Für Gruppenaktionen zusätzlich Admin-Gate:
+    if (ctx.chat?.id === CFG.groupId) {
+      try {
+        const member = await ctx.telegram.getChatMember(CFG.groupId, ctx.from.id);
+        const isAdmin = ['creator', 'administrator'].includes((member as any).status);
+        if (!isAdmin) {
+          await ctx.reply('Nur Admins dürfen bearbeiten.');
+          return;
+        }
+      } catch {
+        await ctx.reply('Bearbeitung nicht erlaubt.');
+        return;
+      }
+    }
+
     const text = (ctx.message as any)?.text || '';
     const parts = text.split(/\s+/).slice(1);
     const patch: any = {};
@@ -90,34 +156,38 @@ bot.command('edit', async (ctx) => {
   }
 });
 
-// Group messages
+// ====== Nachrichten-Handler ======
 bot.on('message', async (ctx) => {
   try {
     const text = (ctx.message as any)?.text || '';
     if (!text) return;
+
+    // In anderen Gruppen (nicht die konfigurierte) nichts tun
+    if (ctx.chat?.id && ctx.chat.id < 0 && ctx.chat.id !== CFG.groupId) return;
+
     const me = ctx.me ?? '';
     const mentioned = text.toLowerCase().includes('@' + me.toLowerCase());
     const looksLikeEvent = /neuer talk|vortrag|event|meeting|neue präsentation|verschieb|edit|änder|update/i.test(text);
-    if (!mentioned && !looksLikeEvent) return;
+    if (ctx.chat?.type === 'private' || mentioned || looksLikeEvent) {
+      const res = await converse(text, { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
 
-    const res = await converse(text, { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
-
-    if ((res as any).type === 'event_created') {
-      const ev = (res as any).event;
-      const st = await statusFor(ev.id);
-      await ctx.reply(eventCard(ev, st.counts), { reply_markup: actionKeyboard(ev.id) });
-    } else if ((res as any).type === 'event_updated') {
-      const ev = (res as any).event;
-      await ctx.reply('Aktualisiert ✅\n' + eventCard(ev), { reply_markup: actionKeyboard(ev.id) });
-    } else if ((res as any).type === 'status') {
-      const { event, counts } = (res as any).payload;
-      await ctx.reply(eventCard(event, counts), { reply_markup: actionKeyboard(event.id) });
-    } else if ((res as any).type === 'events_list') {
-      await ctx.reply(eventsList((res as any).events || []));
-    } else if ((res as any).type === 'announce') {
-      await ctx.reply(((res as any).text as string) || '');
-    } else if ((res as any).text) {
-      await ctx.reply((res as any).text as string);
+      if ((res as any).type === 'event_created') {
+        const ev = (res as any).event;
+        const st = await statusFor(ev.id);
+        await ctx.reply(eventCard(ev, st.counts), { reply_markup: actionKeyboard(ev.id) });
+      } else if ((res as any).type === 'event_updated') {
+        const ev = (res as any).event;
+        await ctx.reply('Aktualisiert ✅\n' + eventCard(ev), { reply_markup: actionKeyboard(ev.id) });
+      } else if ((res as any).type === 'status') {
+        const { event, counts } = (res as any).payload;
+        await ctx.reply(eventCard(event, counts), { reply_markup: actionKeyboard(event.id) });
+      } else if ((res as any).type === 'events_list') {
+        await ctx.reply(eventsList((res as any).events || []));
+      } else if ((res as any).type === 'announce') {
+        await ctx.reply(((res as any).text as string) || '');
+      } else if ((res as any).text) {
+        await ctx.reply((res as any).text as string);
+      }
     }
   } catch (e) {
     console.error('on message error', e);
@@ -125,10 +195,16 @@ bot.on('message', async (ctx) => {
   }
 });
 
-// Callback queries (RSVP + Edit)
+// ====== Callback-Queries (RSVP + Edit) ======
 bot.on('callback_query', async (ctx: any) => {
   try {
     const data = String(ctx.callbackQuery.data || '');
+
+    // Fremde Gruppen ignorieren
+    if (ctx.chat?.id && ctx.chat.id < 0 && ctx.chat.id !== CFG.groupId) {
+      await ctx.answerCbQuery();
+      return;
+    }
 
     // RSVP
     let m = data.match(/^rsvp:(.+):(going|maybe|declined)$/);
@@ -144,16 +220,14 @@ bot.on('callback_query', async (ctx: any) => {
       return;
     }
 
-    // EDIT — admin gate
+    // Edit (Admin-Gate)
     m = data.match(/^edit:([a-z0-9-]+)(?::(.+))?$/i);
     if (m) {
       const evId = m[1];
       const rest = m[2] || '';
 
-      // Only admins/owner may edit
-      const chatId = ctx.chat?.id ?? CFG.groupId;
       try {
-        const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
+        const member = await ctx.telegram.getChatMember(CFG.groupId, ctx.from.id);
         const isAdmin = ['creator', 'administrator'].includes((member as any).status);
         if (!isAdmin) {
           await ctx.answerCbQuery('Nur Admins dürfen bearbeiten.', { show_alert: true });
