@@ -7,19 +7,22 @@ import { setParticipant } from './tools/participants';
 
 export const bot = new Telegraf(CFG.botToken);
 
+// Convenience: numeric group id (may be undefined)
+const GID = CFG.groupId;
+
 /** ===== Zugriffsschutz: nur Mitglieder der konfigurierten Gruppe ===== */
 type MemberCacheEntry = { ok: boolean; ts: number };
 const memberCache = new Map<number, MemberCacheEntry>();
 const TTL_MS = 5 * 60 * 1000;
 
 async function isGroupMember(userId: number): Promise<boolean> {
+  if (!GID) return false; // without configured group, deny
   const now = Date.now();
   const hit = memberCache.get(userId);
   if (hit && now - hit.ts < TTL_MS) return hit.ok;
 
   try {
-    // Prüfe Mitgliedschaft in der EINEN erlaubten Gruppe
-    const m = await bot.telegram.getChatMember(CFG.groupId, userId);
+    const m = await bot.telegram.getChatMember(GID, userId);
     const ok = ['creator', 'administrator', 'member'].includes((m as any).status);
     memberCache.set(userId, { ok, ts: now });
     return ok;
@@ -29,7 +32,7 @@ async function isGroupMember(userId: number): Promise<boolean> {
   }
 }
 
-// Middleware: nur Gruppenmitglieder dürfen den Bot nutzen
+// Middleware: only allow members; ignore other groups
 bot.use(async (ctx, next) => {
   const uid = ctx.from?.id;
   if (!uid) return;
@@ -37,28 +40,26 @@ bot.use(async (ctx, next) => {
   const chatId = ctx.chat?.id;
   const isPrivate = ctx.chat?.type === 'private';
 
-  // 1) Der Bot soll nur in der konfigurierten Gruppe reagieren
-  if (chatId && chatId < 0 && chatId !== CFG.groupId) {
-    // fremde Gruppen ignorieren
+  // 1) Ignore messages from other groups than the configured one
+  if (chatId && chatId < 0 && GID !== undefined && chatId !== GID) {
     return;
   }
 
-  // 2) In DMs nur antworten, wenn der User Mitglied unserer Gruppe ist
+  // 2) In DMs, only allow if user is member of our group
   if (isPrivate) {
     const ok = await isGroupMember(uid);
     if (!ok) {
       try {
-        await ctx.reply('Nur Mitglieder der Promptimals-Gruppe dürfen mir schreiben. 👋\nFüge mich zur Gruppe hinzu oder tritt der Gruppe bei.');
+        await ctx.reply('Nur Mitglieder der Promptimals-Gruppe dürfen mir schreiben. 👋');
       } catch {}
       return;
     }
   }
 
-  // 3) In der eigenen Gruppe: Standardfall → weiter
   return next();
 });
 
-// ====== Commands ======
+// ===== Commands =====
 
 bot.command('id', async (ctx) => {
   try { await ctx.reply(`chat id: ${ctx.chat?.id}`); } catch (e) { console.error('/id error', e); }
@@ -108,14 +109,12 @@ bot.command('status', async (ctx) => {
   }
 });
 
-// Manuelles /edit (optional)
+// Manual /edit (admin-gated in group; DM allowed for members)
 bot.command('edit', async (ctx) => {
   try {
-    // Sicherheitscheck für DMs ist schon in der Middleware.
-    // Für Gruppenaktionen zusätzlich Admin-Gate:
-    if (ctx.chat?.id === CFG.groupId) {
+    if (ctx.chat?.id && GID !== undefined && ctx.chat.id === GID) {
       try {
-        const member = await ctx.telegram.getChatMember(CFG.groupId, ctx.from.id);
+        const member = await ctx.telegram.getChatMember(GID, ctx.from.id);
         const isAdmin = ['creator', 'administrator'].includes((member as any).status);
         if (!isAdmin) {
           await ctx.reply('Nur Admins dürfen bearbeiten.');
@@ -156,14 +155,14 @@ bot.command('edit', async (ctx) => {
   }
 });
 
-// ====== Nachrichten-Handler ======
+// ===== Messages =====
 bot.on('message', async (ctx) => {
   try {
     const text = (ctx.message as any)?.text || '';
     if (!text) return;
 
-    // In anderen Gruppen (nicht die konfigurierte) nichts tun
-    if (ctx.chat?.id && ctx.chat.id < 0 && ctx.chat.id !== CFG.groupId) return;
+    // Ignore other groups
+    if (ctx.chat?.id && ctx.chat.id < 0 && GID !== undefined && ctx.chat.id !== GID) return;
 
     const me = ctx.me ?? '';
     const mentioned = text.toLowerCase().includes('@' + me.toLowerCase());
@@ -195,13 +194,13 @@ bot.on('message', async (ctx) => {
   }
 });
 
-// ====== Callback-Queries (RSVP + Edit) ======
+// ===== Callback-Queries =====
 bot.on('callback_query', async (ctx: any) => {
   try {
     const data = String(ctx.callbackQuery.data || '');
 
-    // Fremde Gruppen ignorieren
-    if (ctx.chat?.id && ctx.chat.id < 0 && ctx.chat.id !== CFG.groupId) {
+    // Ignore other groups
+    if (ctx.chat?.id && ctx.chat.id < 0 && GID !== undefined && ctx.chat.id !== GID) {
       await ctx.answerCbQuery();
       return;
     }
@@ -220,14 +219,15 @@ bot.on('callback_query', async (ctx: any) => {
       return;
     }
 
-    // Edit (Admin-Gate)
+    // Edit (admin-gated)
     m = data.match(/^edit:([a-z0-9-]+)(?::(.+))?$/i);
     if (m) {
+      if (GID === undefined) { await ctx.answerCbQuery('Gruppe nicht konfiguriert.'); return; }
       const evId = m[1];
       const rest = m[2] || '';
 
       try {
-        const member = await ctx.telegram.getChatMember(CFG.groupId, ctx.from.id);
+        const member = await ctx.telegram.getChatMember(GID, ctx.from.id);
         const isAdmin = ['creator', 'administrator'].includes((member as any).status);
         if (!isAdmin) {
           await ctx.answerCbQuery('Nur Admins dürfen bearbeiten.', { show_alert: true });
