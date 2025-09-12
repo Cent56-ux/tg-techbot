@@ -10,60 +10,112 @@ export const bot = new Telegraf(CFG.botToken);
 // Convenience: numeric group id (may be undefined)
 const GID = CFG.groupId;
 
-/** ===== Zugriffsschutz: nur Mitglieder der konfigurierten Gruppe ===== */
+/** ===== Zugriffsschutz mit robustem Verhalten ===== */
 type MemberCacheEntry = { ok: boolean; ts: number };
 const memberCache = new Map<number, MemberCacheEntry>();
 const TTL_MS = 5 * 60 * 1000;
 
-async function isGroupMember(userId: number): Promise<boolean> {
-  if (!GID) return false; // without configured group, deny
+async function isGroupMember(userId: number): Promise<{ ok: boolean; reason?: string }> {
+  if (GID === undefined) return { ok: true, reason: 'GID unset (setup mode)' };
   const now = Date.now();
   const hit = memberCache.get(userId);
-  if (hit && now - hit.ts < TTL_MS) return hit.ok;
+  if (hit && now - hit.ts < TTL_MS) return { ok: hit.ok, reason: 'cache' };
 
   try {
     const m = await bot.telegram.getChatMember(GID, userId);
     const ok = ['creator', 'administrator', 'member'].includes((m as any).status);
     memberCache.set(userId, { ok, ts: now });
-    return ok;
-  } catch {
+    return { ok, reason: `status=${(m as any).status}` };
+  } catch (e: any) {
+    console.error('getChatMember failed', { GID, userId, err: e?.description || String(e) });
     memberCache.set(userId, { ok: false, ts: now });
-    return false;
+    return { ok: false, reason: e?.description || 'getChatMember error' };
   }
 }
 
-// Middleware: only allow members; ignore other groups
+// ===== Middleware =====
 bot.use(async (ctx, next) => {
   const uid = ctx.from?.id;
+  const chatId = ctx.chat?.id;
+  const chatType = ctx.chat?.type; // 'private' | 'group' | 'supergroup' | ...
   if (!uid) return;
 
-  const chatId = ctx.chat?.id;
-  const isPrivate = ctx.chat?.type === 'private';
+  // Extract raw text/data to detect allowed commands
+  const raw =
+    (ctx as any).message?.text ??
+    (ctx as any).message?.caption ??
+    (ctx as any).channelPost?.text ??
+    (ctx as any).channelPost?.caption ??
+    (ctx as any).callbackQuery?.data ??
+    '';
+  const txt = typeof raw === 'string' ? raw.trim() : '';
+  const isAllowlistedCmd =
+    /^\/id(@\w+)?\b/i.test(txt) ||
+    /^\/start(@\w+)?\b/i.test(txt) ||
+    /^\/whoami(@\w+)?\b/i.test(txt) ||
+    /^\/debug(@\w+)?\b/i.test(txt);
 
-  // 1) Ignore messages from other groups than the configured one
-  if (chatId && chatId < 0 && GID !== undefined && chatId !== GID) {
-    return;
+  // Always allow these commands (so we can diagnose even if the gate is wrong)
+  if (isAllowlistedCmd) return next();
+
+  // If group id not configured → allow everything (setup mode)
+  if (GID === undefined) return next();
+
+  // In GROUP/SUPERGROUP:
+  // - If it's NOT our configured group → ignore quietly.
+  // - If it IS our group → allow everything (do NOT call getChatMember here).
+  if (chatType === 'group' || chatType === 'supergroup') {
+    if (chatId !== GID) return;
+    return next();
   }
 
-  // 2) In DMs, only allow if user is member of our group
-  if (isPrivate) {
-    const ok = await isGroupMember(uid);
-    if (!ok) {
+  // In DMs: only allow if the user is member of our configured group
+  if (chatType === 'private') {
+    const res = await isGroupMember(uid);
+    if (!res.ok) {
       try {
         await ctx.reply('Nur Mitglieder der Promptimals-Gruppe dürfen mir schreiben. 👋');
       } catch {}
       return;
     }
+    return next();
   }
 
+  // Default: allow
   return next();
 });
 
-// ===== Commands =====
-
+// ===== Debug commands =====
 bot.command('id', async (ctx) => {
   try { await ctx.reply(`chat id: ${ctx.chat?.id}`); } catch (e) { console.error('/id error', e); }
 });
+
+bot.command('whoami', async (ctx) => {
+  try {
+    const uid = ctx.from?.id;
+    const name = ctx.from?.first_name || '';
+    await ctx.reply(`you: ${name} (${uid})`);
+  } catch (e) { console.error('/whoami error', e); }
+});
+
+bot.command('debug', async (ctx) => {
+  try {
+    const uid = ctx.from?.id!;
+    const chatId = ctx.chat?.id!;
+    const chatType = ctx.chat?.type!;
+    const res = await isGroupMember(uid);
+    await ctx.reply(
+      [
+        `GID: ${GID ?? '(unset)'}`,
+        `chat: ${chatId} (${chatType})`,
+        `user: ${uid}`,
+        `member: ${res.ok} (${res.reason || ''})`
+      ].join('\n')
+    );
+  } catch (e) { console.error('/debug error', e); }
+});
+
+// ===== Commands =====
 
 bot.command('events', async (ctx) => {
   try {
@@ -112,7 +164,8 @@ bot.command('status', async (ctx) => {
 // Manual /edit (admin-gated in group; DM allowed for members)
 bot.command('edit', async (ctx) => {
   try {
-    if (ctx.chat?.id && GID !== undefined && ctx.chat.id === GID) {
+    // In our group, restrict to admins
+    if (GID !== undefined && ctx.chat?.id === GID) {
       try {
         const member = await ctx.telegram.getChatMember(GID, ctx.from.id);
         const isAdmin = ['creator', 'administrator'].includes((member as any).status);
@@ -161,8 +214,8 @@ bot.on('message', async (ctx) => {
     const text = (ctx.message as any)?.text || '';
     if (!text) return;
 
-    // Ignore other groups
-    if (ctx.chat?.id && ctx.chat.id < 0 && GID !== undefined && ctx.chat.id !== GID) return;
+    // If in a group: only handle our configured group (if GID set)
+    if ((ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup') && GID !== undefined && ctx.chat.id !== GID) return;
 
     const me = ctx.me ?? '';
     const mentioned = text.toLowerCase().includes('@' + me.toLowerCase());
@@ -199,8 +252,8 @@ bot.on('callback_query', async (ctx: any) => {
   try {
     const data = String(ctx.callbackQuery.data || '');
 
-    // Ignore other groups
-    if (ctx.chat?.id && ctx.chat.id < 0 && GID !== undefined && ctx.chat.id !== GID) {
+    // In groups: only handle our configured group (if GID set)
+    if ((ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup') && GID !== undefined && ctx.chat.id !== GID) {
       await ctx.answerCbQuery();
       return;
     }
@@ -222,21 +275,23 @@ bot.on('callback_query', async (ctx: any) => {
     // Edit (admin-gated)
     m = data.match(/^edit:([a-z0-9-]+)(?::(.+))?$/i);
     if (m) {
-      if (GID === undefined) { await ctx.answerCbQuery('Gruppe nicht konfiguriert.'); return; }
-      const evId = m[1];
-      const rest = m[2] || '';
-
-      try {
-        const member = await ctx.telegram.getChatMember(GID, ctx.from.id);
-        const isAdmin = ['creator', 'administrator'].includes((member as any).status);
-        if (!isAdmin) {
-          await ctx.answerCbQuery('Nur Admins dürfen bearbeiten.', { show_alert: true });
+      if (GID !== undefined) {
+        try {
+          const member = await ctx.telegram.getChatMember(GID, ctx.from.id);
+          const isAdmin = ['creator', 'administrator'].includes((member as any).status);
+          if (!isAdmin) {
+            await ctx.answerCbQuery('Nur Admins dürfen bearbeiten.', { show_alert: true });
+            return;
+          }
+        } catch (e: any) {
+          console.error('getChatMember (edit) failed', { GID, uid: ctx.from.id, err: e?.description || String(e) });
+          await ctx.answerCbQuery('Bearbeitung nicht erlaubt.', { show_alert: true });
           return;
         }
-      } catch {
-        await ctx.answerCbQuery('Bearbeitung nicht erlaubt.', { show_alert: true });
-        return;
       }
+
+      const evId = m[1];
+      const rest = m[2] || '';
 
       if (!rest) {
         await ctx.answerCbQuery();
