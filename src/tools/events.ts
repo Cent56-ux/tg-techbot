@@ -41,12 +41,13 @@ export async function eventsCreate(input: {
   return data as EventRow;
 }
 
-/** Nächstes (zukünftiges) Event */
-export async function nextEvent(): Promise<EventRow | null> {
+/** Nächstes (zukünftiges) Event – optional nach einem bestimmten Zeitpunkt */
+export async function nextEvent(afterISO?: string): Promise<EventRow | null> {
+  const gtISO = afterISO ?? nowISO();
   const { data, error } = await sb
     .from('events')
     .select('*')
-    .gt('start_at', nowISO())
+    .gt('start_at', gtISO)
     .order('start_at', { ascending: true })
     .limit(1);
   if (error) throw error;
