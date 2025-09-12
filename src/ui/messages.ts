@@ -25,7 +25,7 @@ export function rsvpKeyboard(evId: string) {
   };
 }
 
-/** RSVP + Bearbeiten-Button */
+/** RSVP + Bearbeiten- & Löschen-Button */
 export function actionKeyboard(evId: string) {
   return {
     inline_keyboard: [
@@ -35,7 +35,8 @@ export function actionKeyboard(evId: string) {
         { text: 'Abmelden ❌', callback_data: `rsvp:${evId}:declined` }
       ],
       [
-        { text: '🛠️ Bearbeiten', callback_data: `edit:${evId}` }
+        { text: '🛠️ Bearbeiten', callback_data: `edit:${evId}` },
+        { text: '🗑️ Löschen',   callback_data: `delete:${evId}` }
       ]
     ]
   };

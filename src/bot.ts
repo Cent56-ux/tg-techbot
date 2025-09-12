@@ -2,121 +2,17 @@ import { Telegraf } from 'telegraf';
 import { CFG } from './config';
 import { converse } from './llm';
 import { eventCard, eventsList, actionKeyboard, editMenuKeyboard } from './ui/messages';
-import { statusFor, updateEvent } from './tools/events';
+import { statusFor, updateEvent, deleteEvent } from './tools/events';
 import { setParticipant } from './tools/participants';
 
 export const bot = new Telegraf(CFG.botToken);
 
-// Convenience: numeric group id (may be undefined)
-const GID = CFG.groupId;
-
-/** ===== Zugriffsschutz mit robustem Verhalten ===== */
-type MemberCacheEntry = { ok: boolean; ts: number };
-const memberCache = new Map<number, MemberCacheEntry>();
-const TTL_MS = 5 * 60 * 1000;
-
-async function isGroupMember(userId: number): Promise<{ ok: boolean; reason?: string }> {
-  if (GID === undefined) return { ok: true, reason: 'GID unset (setup mode)' };
-  const now = Date.now();
-  const hit = memberCache.get(userId);
-  if (hit && now - hit.ts < TTL_MS) return { ok: hit.ok, reason: 'cache' };
-
-  try {
-    const m = await bot.telegram.getChatMember(GID, userId);
-    const ok = ['creator', 'administrator', 'member'].includes((m as any).status);
-    memberCache.set(userId, { ok, ts: now });
-    return { ok, reason: `status=${(m as any).status}` };
-  } catch (e: any) {
-    console.error('getChatMember failed', { GID, userId, err: e?.description || String(e) });
-    memberCache.set(userId, { ok: false, ts: now });
-    return { ok: false, reason: e?.description || 'getChatMember error' };
-  }
-}
-
-// ===== Middleware =====
-bot.use(async (ctx, next) => {
-  const uid = ctx.from?.id;
-  const chatId = ctx.chat?.id;
-  const chatType = ctx.chat?.type; // 'private' | 'group' | 'supergroup' | ...
-  if (!uid) return;
-
-  // Extract raw text/data to detect allowed commands
-  const raw =
-    (ctx as any).message?.text ??
-    (ctx as any).message?.caption ??
-    (ctx as any).channelPost?.text ??
-    (ctx as any).channelPost?.caption ??
-    (ctx as any).callbackQuery?.data ??
-    '';
-  const txt = typeof raw === 'string' ? raw.trim() : '';
-  const isAllowlistedCmd =
-    /^\/id(@\w+)?\b/i.test(txt) ||
-    /^\/start(@\w+)?\b/i.test(txt) ||
-    /^\/whoami(@\w+)?\b/i.test(txt) ||
-    /^\/debug(@\w+)?\b/i.test(txt);
-
-  // Always allow these commands (so we can diagnose even if the gate is wrong)
-  if (isAllowlistedCmd) return next();
-
-  // If group id not configured → allow everything (setup mode)
-  if (GID === undefined) return next();
-
-  // In GROUP/SUPERGROUP:
-  // - If it's NOT our configured group → ignore quietly.
-  // - If it IS our group → allow everything (do NOT call getChatMember here).
-  if (chatType === 'group' || chatType === 'supergroup') {
-    if (chatId !== GID) return;
-    return next();
-  }
-
-  // In DMs: only allow if the user is member of our configured group
-  if (chatType === 'private') {
-    const res = await isGroupMember(uid);
-    if (!res.ok) {
-      try {
-        await ctx.reply('Nur Mitglieder der Promptimals-Gruppe dürfen mir schreiben. 👋');
-      } catch {}
-      return;
-    }
-    return next();
-  }
-
-  // Default: allow
-  return next();
-});
-
-// ===== Debug commands =====
+// /id (Diagnose)
 bot.command('id', async (ctx) => {
   try { await ctx.reply(`chat id: ${ctx.chat?.id}`); } catch (e) { console.error('/id error', e); }
 });
 
-bot.command('whoami', async (ctx) => {
-  try {
-    const uid = ctx.from?.id;
-    const name = ctx.from?.first_name || '';
-    await ctx.reply(`you: ${name} (${uid})`);
-  } catch (e) { console.error('/whoami error', e); }
-});
-
-bot.command('debug', async (ctx) => {
-  try {
-    const uid = ctx.from?.id!;
-    const chatId = ctx.chat?.id!;
-    const chatType = ctx.chat?.type!;
-    const res = await isGroupMember(uid);
-    await ctx.reply(
-      [
-        `GID: ${GID ?? '(unset)'}`,
-        `chat: ${chatId} (${chatType})`,
-        `user: ${uid}`,
-        `member: ${res.ok} (${res.reason || ''})`
-      ].join('\n')
-    );
-  } catch (e) { console.error('/debug error', e); }
-});
-
-// ===== Commands =====
-
+// /events
 bot.command('events', async (ctx) => {
   try {
     const res = await converse('Liste die kommenden Events (max 5)', { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
@@ -131,6 +27,7 @@ bot.command('events', async (ctx) => {
   }
 });
 
+// /next (alias /status)
 bot.command('next', async (ctx) => {
   try {
     const res = await converse('Zeige Status des nächsten Events', { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
@@ -161,13 +58,12 @@ bot.command('status', async (ctx) => {
   }
 });
 
-// Manual /edit (admin-gated in group; DM allowed for members)
+// /edit (manuelle key=value Edits; Admin-Gate nur in der Gruppe)
 bot.command('edit', async (ctx) => {
   try {
-    // In our group, restrict to admins
-    if (GID !== undefined && ctx.chat?.id === GID) {
+    if (CFG.groupId !== undefined && ctx.chat?.id === CFG.groupId) {
       try {
-        const member = await ctx.telegram.getChatMember(GID, ctx.from.id);
+        const member = await ctx.telegram.getChatMember(CFG.groupId, ctx.from.id);
         const isAdmin = ['creator', 'administrator'].includes((member as any).status);
         if (!isAdmin) {
           await ctx.reply('Nur Admins dürfen bearbeiten.');
@@ -193,6 +89,7 @@ bot.command('edit', async (ctx) => {
       else if (/^start|start_at$/i.test(k)) patch.start_at = v;
       else if (/^recreate_zoom$/i.test(k)) patch.recreate_zoom = /^(1|true|yes|ja)$/i.test(v);
     }
+
     const res = await converse(JSON.stringify({ intent: 'events_update', patch }), { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
     if ((res as any).type === 'event_updated') {
       const ev = (res as any).event;
@@ -208,18 +105,16 @@ bot.command('edit', async (ctx) => {
   }
 });
 
-// ===== Messages =====
+// Nachrichten: DMs, oder Erwähnung, oder „Event“-Pattern
 bot.on('message', async (ctx) => {
   try {
     const text = (ctx.message as any)?.text || '';
     if (!text) return;
 
-    // If in a group: only handle our configured group (if GID set)
-    if ((ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup') && GID !== undefined && ctx.chat.id !== GID) return;
-
     const me = ctx.me ?? '';
     const mentioned = text.toLowerCase().includes('@' + me.toLowerCase());
     const looksLikeEvent = /neuer talk|vortrag|event|meeting|neue präsentation|verschieb|edit|änder|update/i.test(text);
+
     if (ctx.chat?.type === 'private' || mentioned || looksLikeEvent) {
       const res = await converse(text, { tg_user_id: ctx.from.id, display_name: ctx.from.first_name });
 
@@ -247,16 +142,10 @@ bot.on('message', async (ctx) => {
   }
 });
 
-// ===== Callback-Queries =====
+// Callback-Queries: RSVP + Edit + Delete
 bot.on('callback_query', async (ctx: any) => {
   try {
     const data = String(ctx.callbackQuery.data || '');
-
-    // In groups: only handle our configured group (if GID set)
-    if ((ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup') && GID !== undefined && ctx.chat.id !== GID) {
-      await ctx.answerCbQuery();
-      return;
-    }
 
     // RSVP
     let m = data.match(/^rsvp:(.+):(going|maybe|declined)$/);
@@ -272,26 +161,27 @@ bot.on('callback_query', async (ctx: any) => {
       return;
     }
 
-    // Edit (admin-gated)
+    // Edit-Menü
     m = data.match(/^edit:([a-z0-9-]+)(?::(.+))?$/i);
     if (m) {
-      if (GID !== undefined) {
+      const evId = m[1];
+      const rest = m[2] || '';
+
+      // Admin-Check NUR für Bearbeiten-Aktionen:
+      const needAdmin = rest && rest !== '';
+      if (needAdmin && CFG.groupId !== undefined && ctx.chat?.id === CFG.groupId) {
         try {
-          const member = await ctx.telegram.getChatMember(GID, ctx.from.id);
+          const member = await ctx.telegram.getChatMember(CFG.groupId, ctx.from.id);
           const isAdmin = ['creator', 'administrator'].includes((member as any).status);
           if (!isAdmin) {
             await ctx.answerCbQuery('Nur Admins dürfen bearbeiten.', { show_alert: true });
             return;
           }
-        } catch (e: any) {
-          console.error('getChatMember (edit) failed', { GID, uid: ctx.from.id, err: e?.description || String(e) });
+        } catch {
           await ctx.answerCbQuery('Bearbeitung nicht erlaubt.', { show_alert: true });
           return;
         }
       }
-
-      const evId = m[1];
-      const rest = m[2] || '';
 
       if (!rest) {
         await ctx.answerCbQuery();
@@ -349,6 +239,32 @@ bot.on('callback_query', async (ctx: any) => {
         ].join('\n'));
         return;
       }
+    }
+
+    // Delete (nur Admins)
+    if (data.startsWith('delete:')) {
+      const evId = data.split(':')[1];
+      try {
+        if (CFG.groupId !== undefined && ctx.chat?.id === CFG.groupId) {
+          const member = await ctx.telegram.getChatMember(CFG.groupId, ctx.from.id);
+          const isAdmin = ['creator', 'administrator'].includes((member as any).status);
+          if (!isAdmin) {
+            await ctx.answerCbQuery('Nur Admins dürfen löschen.', { show_alert: true });
+            return;
+          }
+        }
+        await deleteEvent(evId);
+        await ctx.answerCbQuery('Event gelöscht ✅');
+        try {
+          await ctx.editMessageText('❌ Dieses Event wurde gelöscht.');
+        } catch {
+          await ctx.reply('❌ Dieses Event wurde gelöscht.');
+        }
+      } catch (e) {
+        console.error('delete error', e);
+        await ctx.answerCbQuery('Fehler beim Löschen', { show_alert: true });
+      }
+      return;
     }
 
     await ctx.answerCbQuery();

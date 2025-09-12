@@ -100,3 +100,21 @@ export async function markReminder(event_id: string, kind: '48h' | '15m') {
   const { error } = await sb.from('events').update(patch).eq('id', event_id);
   if (error) throw error;
 }
+
+// --- Delete an event (and its participants) ---
+import { sb } from '../db/supabase';
+
+/**
+ * Löscht ein Event inkl. aller Teilnehmer-Einträge.
+ * Gibt das gelöschte Event zurück (oder wirft bei Fehlern).
+ */
+export async function deleteEvent(evId: string) {
+  // Teilnehmer (FK) zuerst entfernen
+  const pDel = await sb.from('participants').delete().eq('event_id', evId);
+  if (pDel.error) throw pDel.error;
+
+  // Event löschen und zurückgeben
+  const eDel = await sb.from('events').delete().eq('id', evId).select().single();
+  if (eDel.error) throw eDel.error;
+  return eDel.data;
+}
