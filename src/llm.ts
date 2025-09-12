@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { CFG } from './config';
-import { eventsCreate, nextEvent, statusFor, listUpcoming } from './tools/events';
+import { eventsCreate, nextEvent, statusFor, listUpcoming, updateEvent } from './tools/events';
 import { setParticipant } from './tools/participants';
 
 const client = new OpenAI({ apiKey: CFG.openaiKey });
@@ -24,6 +24,21 @@ export const tools: any[] = [
       description: { type: 'string' },
       create_zoom: { type: 'boolean', default: true }
     }, required: ['title','start_at','duration_minutes','presenter'] }
+  }},
+  { type: 'function', function: {
+    name: 'events_update',
+    description: 'Bestehendes Event aktualisieren. Ohne id wird das nächste Event editiert.',
+    parameters: { type: 'object', properties: {
+      id: { type: 'string', description: 'Event-ID (optional). Wenn leer, nimm das nächste Event.' },
+      patch: { type: 'object', properties: {
+        title: { type: 'string' },
+        start_at: { type: 'string', format: 'date-time' },
+        duration_minutes: { type: 'integer', minimum: 15, maximum: 240 },
+        presenter: { type: 'string' },
+        description: { type: 'string' },
+        recreate_zoom: { type: 'boolean', description: 'Wenn true, erzeuge neue Zoom-Einladung.' }
+      } }
+    }, required: ['patch'] }
   }},
   { type: 'function', function: {
     name: 'participants_set',
@@ -85,6 +100,10 @@ export async function converse(userMsg: string, context: { tg_user_id: number; d
     case 'events_create': {
       const ev = await eventsCreate({ ...args, created_by: context.tg_user_id });
       return { type: 'event_created', event: ev };
+    }
+    case 'events_update': {
+      const ev = await updateEvent(args);
+      return { type: 'event_updated', event: ev };
     }
     case 'participants_set': {
       const row = await setParticipant({ ...args, tg_user_id: context.tg_user_id, display_name: context.display_name });
