@@ -1,6 +1,6 @@
 import { sb } from '../db/supabase';
 
-/** --- Types (leicht) --- */
+/** --- Types --- */
 export type EventRow = {
   id: string;
   title: string;
@@ -15,8 +15,43 @@ export type EventRow = {
 
 export type Counts = { going: number; maybe: number; total: number };
 
-/** --- Helpers --- */
 const nowISO = () => new Date().toISOString();
+
+/** Neues Event anlegen */
+export async function eventsCreate(input: {
+  title: string;
+  start_at: string;              // ISO
+  duration_minutes?: number;
+  presenter?: string | null;
+  description?: string | null;
+  zoom_join_url?: string | null;
+}): Promise<EventRow> {
+  const payload = {
+    title: input.title,
+    start_at: input.start_at,
+    duration_minutes: input.duration_minutes ?? 30,
+    presenter: input.presenter ?? null,
+    description: input.description ?? null,
+    zoom_join_url: input.zoom_join_url ?? null,
+    reminder_48h_posted: false,
+    reminder_15m_posted: false,
+  };
+  const { data, error } = await sb.from('events').insert(payload).select().single();
+  if (error) throw error;
+  return data as EventRow;
+}
+
+/** Nächstes (zukünftiges) Event */
+export async function nextEvent(): Promise<EventRow | null> {
+  const { data, error } = await sb
+    .from('events')
+    .select('*')
+    .gt('start_at', nowISO())
+    .order('start_at', { ascending: true })
+    .limit(1);
+  if (error) throw error;
+  return (data && data[0]) ? (data[0] as EventRow) : null;
+}
 
 /** Liste kommender Events */
 export async function listUpcoming(limit = 5): Promise<EventRow[]> {
@@ -62,7 +97,7 @@ export async function markReminder(eventId: string, which: '48h' | '15m') {
 export async function updateEvent(opts: { id: string; patch: Partial<EventRow> & { recreate_zoom?: boolean } }): Promise<EventRow> {
   const { id, patch } = opts;
 
-  // Wenn recreate_zoom gesetzt ist, entferne vorhandenen Link – dein Zoom-Tool baut ihn neu.
+  // Wenn recreate_zoom gesetzt ist, entfernen wir vorhandenen Link – dein Zoom-Tool setzt später neu.
   const finalPatch: any = { ...patch };
   if (patch.recreate_zoom) {
     finalPatch.zoom_join_url = null;
@@ -76,15 +111,12 @@ export async function updateEvent(opts: { id: string; patch: Partial<EventRow> &
 
 /**
  * Event löschen (inkl. Teilnehmer).
- * - Wenn in der DB ein FK mit ON DELETE CASCADE existiert, reicht der zweite DELETE aus.
- * - Wir löschen hier trotzdem erst participants, dann event (robust auch ohne CASCADE).
+ * - Mit/ohne FK-CASCADE robust: erst participants, dann event.
  */
 export async function deleteEvent(evId: string): Promise<EventRow> {
-  // Teilnehmer entfernen (ignorieren, wenn es keine gibt)
   const pDel = await sb.from('participants').delete().eq('event_id', evId);
   if (pDel.error) throw pDel.error;
 
-  // Event löschen und gelöschte Row zurückgeben
   const eDel = await sb.from('events').delete().eq('id', evId).select().single();
   if (eDel.error) throw eDel.error;
   return eDel.data as EventRow;
