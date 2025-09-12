@@ -4,13 +4,16 @@ import { CFG } from './config';
 import { markReminder, statusFor } from './tools/events';
 
 export async function tick() {
+  // If groupId is not configured yet, skip scheduler work
+  if (CFG.groupId === undefined) return;
+
   const now = new Date();
 
   const win48Start = new Date(now.getTime() + 45 * 60 * 60 * 1000);
-  const win48End = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  const win48End   = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
   const win15Start = new Date(now.getTime() + 10 * 60 * 1000);
-  const win15End = new Date(now.getTime() + 15 * 60 * 1000);
+  const win15End   = new Date(now.getTime() + 15 * 60 * 1000);
 
   { // 48h Reminder
     const { data, error } = await sb.from('events')

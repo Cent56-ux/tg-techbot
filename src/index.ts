@@ -4,9 +4,9 @@ import { bot } from './bot';
 import { tick } from './scheduler';
 
 async function main() {
-  requireEnv('TELEGRAM_BOT_TOKEN');
+  requireEnv(['TELEGRAM_BOT_TOKEN']);
 
-  await bot.launch();
+  await bot.launch({ dropPendingUpdates: true });
   console.log('Bot launched ✅');
 
   setInterval(() => { tick().catch(err => console.error('tick error', err)); }, 60_000);
