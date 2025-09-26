@@ -1,4 +1,3 @@
-import { Markup } from 'telegraf';
 export function eventCard(ev: any, counts?: { going: number; maybe: number }) {
   const dt = new Date(ev.start_at);
   const when = dt.toLocaleString('de-DE', {
@@ -27,21 +26,11 @@ export function rsvpKeyboard(evId: string) {
 }
 
 /** RSVP + Bearbeiten- & Löschen-Button */
-export function actionKeyboard(eventId: string) {
-  return Markup.inlineKeyboard([
-    [
-      { text: '✅ Ich komme',  callback_data: `rsvp:${eventId}:going` },
-      { text: '❔ Vielleicht',  callback_data: `rsvp:${eventId}:maybe` },
-      { text: '🚫 Abmelden',    callback_data: `rsvp:${eventId}:declined` },
-    ],
-    [
-      { text: '📝 Alles bearbeiten', callback_data: `editall:${eventId}` },
-      { text: '✏️ Titel',            callback_data: `editTitle:${eventId}` },
-      { text: '🗑️ Löschen',          callback_data: `delete:${eventId}` },
-    ],
-  ]);
-}
-:going` },
+export function actionKeyboard(evId: string) {
+  return {
+    inline_keyboard: [
+      [
+        { text: 'Ich komme ✅', callback_data: `rsvp:${evId}:going` },
         { text: 'Vielleicht 🤔', callback_data: `rsvp:${evId}:maybe` },
         { text: 'Abmelden ❌', callback_data: `rsvp:${evId}:declined` }
       ],
