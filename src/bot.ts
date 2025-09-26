@@ -4,6 +4,7 @@ import { converse } from './llm';
 import { eventCard, eventsList, actionKeyboard, editMenuKeyboard } from './ui/messages';
 import { statusFor, updateEvent, deleteEvent } from './tools/events';
 
+
 import { setParticipant } from './tools/participants';
 // === BEGIN: List/Next + Edit-Wizard (ohne LLM) ===
 

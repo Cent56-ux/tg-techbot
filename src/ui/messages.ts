@@ -42,6 +42,17 @@ export function actionKeyboard(eventId: string) {
   ]);
 }
 :going` },
+      { text: '❔ Vielleicht',  callback_data: `rsvp:${eventId}:maybe` },
+      { text: '🚫 Abmelden',    callback_data: `rsvp:${eventId}:declined` },
+    ],
+    [
+      { text: '📝 Alles bearbeiten', callback_data: `editall:${eventId}` },
+      { text: '✏️ Titel',            callback_data: `editTitle:${eventId}` },
+      { text: '🗑️ Löschen',          callback_data: `delete:${eventId}` },
+    ],
+  ]);
+}
+:going` },
         { text: 'Vielleicht 🤔', callback_data: `rsvp:${evId}:maybe` },
         { text: 'Abmelden ❌', callback_data: `rsvp:${evId}:declined` }
       ],
