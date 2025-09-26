@@ -33,7 +33,7 @@ function rsvpKeyboard(evId) {
             ]]
     };
 }
-/** RSVP + Bearbeiten-Button */
+/** RSVP + Bearbeiten- & Löschen-Button */
 function actionKeyboard(evId) {
     return {
         inline_keyboard: [
@@ -43,7 +43,8 @@ function actionKeyboard(evId) {
                 { text: 'Abmelden ❌', callback_data: `rsvp:${evId}:declined` }
             ],
             [
-                { text: '🛠️ Bearbeiten', callback_data: `edit:${evId}` }
+                { text: '🛠️ Bearbeiten', callback_data: `edit:${evId}` },
+                { text: '🗑️ Löschen', callback_data: `delete:${evId}` }
             ]
         ]
     };
